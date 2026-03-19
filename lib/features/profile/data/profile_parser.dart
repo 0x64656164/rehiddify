@@ -26,18 +26,19 @@ import 'package:meta/meta.dart';
 /// - if none of these methods return a non-blank string, switch(profileType)
 /// - remote:  fallback to `Remote Profile`
 /// - local: fallback to protocol, extracted from content by protocol()
-
 class ProfileParser {
   static const infiniteTrafficThreshold = 920_233_720_368;
   static const infiniteTimeThreshold = 92_233_720_368;
 
   // ---------------------------------------------------------------------------
-  // Allowed keys in profileOverride (merged into SingboxConfigOption at
+  // Allowed keys in profileOverride JSON (merged into SingboxConfigOption at
   // connect-time via ConfigOptionRepository.fullOptionsOverrided).
   //
-  // 'rules' is extracted automatically from the sing-box JSON config when the
-  // subscription defines route.rule_set entries.  If no rule_set is present
-  // the key is simply absent and the core uses the default empty-rules list.
+  // 'execute-config-as-is' — set to true when the subscription is a full
+  //     sing-box JSON config that contains route.rule_set.  The core then
+  //     uses the profile's routing directly, preserving download_detour,
+  //     update_interval, action-only rules, and all other routing details.
+  //     Hiddify still applies DNS, ports, warp, tls-tricks etc on top.
   // ---------------------------------------------------------------------------
   static const allowedOverrideConfigs = [
     'connection-test-url',
@@ -46,7 +47,7 @@ class ProfileParser {
     'warp',
     'warp2',
     'tls-tricks',
-    'rules', // populated from route.rule_set in the sing-box profile JSON
+    'execute-config-as-is', // true for full sing-box JSON profiles with routing
   ];
 
   static const allowedProfileHeaders = [
@@ -98,7 +99,8 @@ class ProfileParser {
                 populatedHeaders: populatedHeaders,
               ),
             ).flatMap((profEntity) =>
-                Either.tryCatch(() => profEntity.toInsertEntry(), ProfileFailure.unexpected)),
+                Either.tryCatch(
+                    () => profEntity.toInsertEntry(), ProfileFailure.unexpected)),
           ),
         );
   }
@@ -130,7 +132,8 @@ class ProfileParser {
                 populatedHeaders: populatedHeaders,
               ),
             ).flatMap((profEntity) =>
-                Either.tryCatch(() => profEntity.toInsertEntry(), ProfileFailure.unexpected)),
+                Either.tryCatch(
+                    () => profEntity.toInsertEntry(), ProfileFailure.unexpected)),
           ),
         ),
       );
@@ -152,7 +155,8 @@ class ProfileParser {
               tempFilePath: tempFilePath,
               profile: rp.copyWith(populatedHeaders: populatedHeaders),
             ).flatMap((profEntity) =>
-                Either.tryCatch(() => profEntity.toUpdateEntry(), ProfileFailure.unexpected)),
+                Either.tryCatch(
+                    () => profEntity.toUpdateEntry(), ProfileFailure.unexpected)),
           ),
         ),
       );
@@ -167,7 +171,8 @@ class ProfileParser {
             local: (lp) => parse(tempFilePath: tempFilePath, profile: lp),
           )
           .flatMap((profEntity) =>
-              Either.tryCatch(() => profEntity.toUpdateEntry(), ProfileFailure.unexpected));
+              Either.tryCatch(
+                  () => profEntity.toUpdateEntry(), ProfileFailure.unexpected));
 
   // ── private download helper ─────────────────────────────────────────────────
 
@@ -234,8 +239,7 @@ class ProfileParser {
             tmpPath,
             cancelToken: cancelToken,
             userAgent: ref.read(ConfigOptions.useXrayCoreWhenPossible)
-                ? httpClient.userAgent
-                    .replaceAll('HiddifyNext', 'HiddifyNextX')
+                ? httpClient.userAgent.replaceAll('HiddifyNext', 'HiddifyNextX')
                 : null,
           );
           results[currentIndex] =
@@ -336,107 +340,28 @@ class ProfileParser {
     return null;
   }
 
-  // ── rule extraction (static, new) ──────────────────────────────────────────
+  // ── route detection (static) ──────────────────────────────────────────────
 
-  /// Tries to parse [tempFilePath] as a sing-box JSON config and extract
-  /// `route.rule_set` entries.
+  /// Returns `true` when [tempFilePath] is a sing-box JSON config that
+  /// contains a non-empty `route.rule_set`.
   ///
-  /// Each entry is converted to a map that matches the kebab-cased JSON
-  /// representation of [SingboxRule]:
-  /// ```json
-  /// {"rule-set-url": "https://...", "outbound": "bypass"}
-  /// ```
+  /// Used to decide whether `execute-config-as-is: true` should be set in the
+  /// profile override, so the core uses the full routing from the profile JSON
+  /// (preserving `download_detour`, `update_interval`, action-only rules, etc.)
   ///
-  /// The outbound action is resolved by looking up the rule_set tag inside
-  /// `route.rules`.  If a tag has no corresponding rule, the outbound
-  /// defaults to `"proxy"`.
-  ///
-  /// Returns **null** (= fall back to default empty rules) when:
-  ///   - the file is not a valid JSON object,
-  ///   - there is no `route` key,
-  ///   - `route.rule_set` is absent or empty, or
-  ///   - none of the rule_set entries contain a `url` field.
-  static List<Map<String, dynamic>>? _extractRulesFromConfig(
-      String tempFilePath) {
+  /// Returns `false` when the file is not JSON, has no `route` key, or has
+  /// an empty / absent `route.rule_set`.
+  static bool _hasSingboxRouting(String tempFilePath) {
     try {
       final content = File(tempFilePath).readAsStringSync();
       final dynamic decoded = jsonDecode(content);
-      if (decoded is! Map<String, dynamic>) return null;
-
+      if (decoded is! Map<String, dynamic>) return false;
       final route = decoded['route'];
-      if (route is! Map<String, dynamic>) return null;
-
-      final rawRuleSets = route['rule_set'];
-      if (rawRuleSets is! List || rawRuleSets.isEmpty) return null;
-
-      // ── step 1: build tag → outbound mapping from route.rules ─────────────
-      final tagToOutbound = <String, String>{};
-      final rawRules = route['rules'];
-      if (rawRules is List) {
-        for (final rule in rawRules) {
-          if (rule is! Map<String, dynamic>) continue;
-          final outbound = rule['outbound'];
-          if (outbound is! String) continue;
-          final ruleSet = rule['rule_set'];
-          if (ruleSet is String) {
-            tagToOutbound[ruleSet] = outbound;
-          } else if (ruleSet is List) {
-            for (final tag in ruleSet) {
-              if (tag is String) tagToOutbound[tag] = outbound;
-            }
-          }
-        }
-      }
-
-      // ── step 2: convert rule_set entries to SingboxRule-compatible JSON ────
-      //
-      // Only entries with a `url` field can be represented as SingboxRule
-      // (which maps to the hiddify-core "rule-set-url" field).
-      //
-      // Entries WITHOUT a url (binary/local rule sets like "geosite-category-ads-all")
-      // are intentionally skipped — they have no representation in SingboxRule and
-      // must be part of the core config directly.  The caller (hiddify-core) already
-      // receives the full sing-box JSON via validateConfigByPath / generateFullConfig,
-      // so local rule_sets in the profile are handled there.
-      final result = <Map<String, dynamic>>[];
-      for (final rawRuleSet in rawRuleSets) {
-        if (rawRuleSet is! Map<String, dynamic>) continue;
-        final url = rawRuleSet['url'];
-        if (url is! String || url.isEmpty) continue;
-        final tag = rawRuleSet['tag'];
-        final rawOutbound = (tag is String) ? tagToOutbound[tag] : null;
-        result.add({
-          'rule-set-url': url,
-          'outbound': _mapSingboxOutbound(rawOutbound),
-        });
-      }
-
-      return result.isEmpty ? null : result;
+      if (route is! Map<String, dynamic>) return false;
+      final ruleSets = route['rule_set'];
+      return ruleSets is List && ruleSets.isNotEmpty;
     } catch (_) {
-      // Not a sing-box JSON config — fall back silently.
-      return null;
-    }
-  }
-
-  /// Maps a raw sing-box outbound action string to the [RuleOutbound] enum
-  /// name used in [SingboxRule] JSON serialisation.
-  ///
-  /// Handles Hiddify §hide§ / §...§ suffixes that mark an outbound as hidden
-  /// in the UI.  Example: "direct §hide§" → "bypass", not "proxy".
-  static String _mapSingboxOutbound(String? outbound) {
-    if (outbound == null) return 'proxy';
-    // Strip §...§ annotations before comparing (Hiddify hides outbounds with them).
-    final cleaned =
-        outbound.replaceAll(RegExp(r'§[^§]*§'), '').trim().toLowerCase();
-    switch (cleaned) {
-      case 'direct':
-      case 'bypass':
-        return 'bypass';
-      case 'block':
-        return 'block';
-      default:
-        // Any named proxy outbound ("select", "url-test", etc.) → proxy.
-        return 'proxy';
+      return false;
     }
   }
 
@@ -458,8 +383,8 @@ class ProfileParser {
         if (headers['profile-title'] case final String titleHeader
             when name.isEmpty) {
           if (titleHeader.startsWith("base64:")) {
-            name = utf8
-                .decode(base64.decode(titleHeader.replaceFirst("base64:", "")));
+            name = utf8.decode(
+                base64.decode(titleHeader.replaceFirst("base64:", "")));
           } else {
             name = titleHeader.trim();
           }
@@ -506,25 +431,29 @@ class ProfileParser {
 
         // ── route rules from subscription ─────────────────────────────────────
         //
-        // If the subscription is a full sing-box config JSON that includes
-        // `route.rule_set` entries, extract them and store as 'rules' in the
-        // profileOverride JSON.  This value is persisted to the database and
-        // later merged into SingboxConfigOption by
-        // ConfigOptionRepository.fullOptionsOverrided(), replacing the default
-        // empty list.
+        // Strategy depends on what the profile contains:
         //
-        // If no rule_set definitions are found (the profile is a proxy list,
-        // YAML/Clash config, or a sing-box config without rule_set), we leave
-        // 'rules' absent so the default empty list is used — the "as usual"
-        // fallback.
+        //   Full sing-box JSON (has route.rule_set)
+        //   → set 'execute-config-as-is': true
+        //     The core uses the profile JSON's routing DIRECTLY, preserving:
+        //       • download_detour (crucial — lets rule sets download via proxy)
+        //       • update_interval, tag, type for each rule_set
+        //       • action-only rules (sniff, hijack-dns)
+        //       • ip_cidr, domain_suffix, ip_is_private rules
+        //     Hiddify still applies DNS, ports, warp, tls-tricks etc.
         //
-        // The check `!headers.containsKey('rules')` is defensive: a future
-        // allowedProfileHeaders extension could let subscriptions set rules via
-        // HTTP headers, in which case those take precedence over the JSON body.
-        if (!headers.containsKey('rules')) {
-          final profileRules = _extractRulesFromConfig(tempFilePath);
-          if (profileRules != null) {
-            headers['rules'] = profileRules;
+        //   Proxy list / YAML / sing-box without routing
+        //   → leave execute-config-as-is absent (defaults to false)
+        //     Core uses Hiddify's default routing.
+        //
+        // WHY NOT rules: [] approach?
+        //   SingboxRule only has ruleSetUrl + outbound — it loses download_detour.
+        //   Without download_detour: "select", the core downloads .srs files via
+        //   the direct outbound.  If the subscription URLs require the VPN to reach
+        //   (e.g. GitHub blocked), downloads fail silently → empty rule sets.
+        if (!headers.containsKey('execute-config-as-is')) {
+          if (_hasSingboxRouting(tempFilePath)) {
+            headers['execute-config-as-is'] = true;
           }
         }
 
@@ -563,9 +492,6 @@ class ProfileParser {
         }
 
         // ── build profileOverride JSON ─────────────────────────────────────────
-        // Strip every key not in allowedOverrideConfigs (which now includes
-        // 'rules').  The resulting JSON is stored in the DB and applied at
-        // connect-time via fullOptionsOverrided().
         headers.removeWhere(
           (key, value) =>
               !allowedOverrideConfigs.contains(key) ||
@@ -649,8 +575,8 @@ class ProfileParser {
             value is Map<String, dynamic>) {
           main[key] = _mergeJson(main[key] as Map<String, dynamic>, value);
         } else {
-          // For lists (including 'rules'), the profile value fully replaces
-          // the default value — this is the intended priority mechanism.
+          // Lists and scalars: profile value fully replaces the default.
+          // This is intentional — subscription rules have priority.
           main[key] = value;
         }
       } else {
