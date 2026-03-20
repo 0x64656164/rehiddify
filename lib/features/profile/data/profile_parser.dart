@@ -34,7 +34,7 @@ class ProfileParser {
   // Allowed keys in profileOverride JSON (merged into SingboxConfigOption at
   // connect-time via ConfigOptionRepository.fullOptionsOverrided).
   //
-  // 'execute-config-as-is' — set to true when the subscription is a full
+  // 'enable-full-config' — set to true when the subscription is a full
   //     sing-box JSON config that contains route.rule_set.  The core then
   //     uses the profile's routing directly, preserving download_detour,
   //     update_interval, action-only rules, and all other routing details.
@@ -47,7 +47,7 @@ class ProfileParser {
     'warp',
     'warp2',
     'tls-tricks',
-    'execute-config-as-is', // true for full sing-box JSON profiles with routing
+    'enable-full-config', // true for full sing-box JSON profiles with routing
   ];
 
   static const allowedProfileHeaders = [
@@ -345,7 +345,7 @@ class ProfileParser {
   /// Returns `true` when [tempFilePath] is a sing-box JSON config that
   /// contains a non-empty `route.rule_set`.
   ///
-  /// Used to decide whether `execute-config-as-is: true` should be set in the
+  /// Used to decide whether `enable-full-config: true` should be set in the
   /// profile override, so the core uses the full routing from the profile JSON
   /// (preserving `download_detour`, `update_interval`, action-only rules, etc.)
   ///
@@ -434,7 +434,7 @@ class ProfileParser {
         // Strategy depends on what the profile contains:
         //
         //   Full sing-box JSON (has route.rule_set)
-        //   → set 'execute-config-as-is': true
+        //   → set 'enable-full-config': true
         //     The core uses the profile JSON's routing DIRECTLY, preserving:
         //       • download_detour (crucial — lets rule sets download via proxy)
         //       • update_interval, tag, type for each rule_set
@@ -443,7 +443,7 @@ class ProfileParser {
         //     Hiddify still applies DNS, ports, warp, tls-tricks etc.
         //
         //   Proxy list / YAML / sing-box without routing
-        //   → leave execute-config-as-is absent (defaults to false)
+        //   → leave enable-full-config absent (defaults to false)
         //     Core uses Hiddify's default routing.
         //
         // WHY NOT rules: [] approach?
@@ -451,9 +451,9 @@ class ProfileParser {
         //   Without download_detour: "select", the core downloads .srs files via
         //   the direct outbound.  If the subscription URLs require the VPN to reach
         //   (e.g. GitHub blocked), downloads fail silently → empty rule sets.
-        if (!headers.containsKey('execute-config-as-is')) {
+        if (!headers.containsKey('enable-full-config')) {
           if (_hasSingboxRouting(tempFilePath)) {
-            headers['execute-config-as-is'] = true;
+            headers['enable-full-config'] = true;
           }
         }
 
