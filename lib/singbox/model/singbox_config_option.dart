@@ -20,7 +20,11 @@ class SingboxConfigOption with _$SingboxConfigOption {
     required BalancerStrategy balancerStrategy,
     required bool blockAds,
     required bool useXrayCoreWhenPossible,
-    required bool executeConfigAsIs,
+    // Renamed from executeConfigAsIs → enableFullConfig so it serialises as
+    // "enable-full-config" (kebab-case), matching the hiddify-core proto field
+    // HiddifyOptions.enable_full_config.  When true the core uses the profile
+    // JSON's routing section directly instead of generating its own.
+    required bool enableFullConfig,
     required LogLevel logLevel,
     required bool resolveDestination,
     required IPv6Mode ipv6Mode,
@@ -59,7 +63,8 @@ class SingboxConfigOption with _$SingboxConfigOption {
     return encoder.convert(toJson());
   }
 
-  factory SingboxConfigOption.fromJson(Map<String, dynamic> json) => _$SingboxConfigOptionFromJson(json);
+  factory SingboxConfigOption.fromJson(Map<String, dynamic> json) =>
+      _$SingboxConfigOptionFromJson(json);
 }
 
 @freezed
@@ -80,21 +85,9 @@ class SingboxWarpOption with _$SingboxWarpOption {
     @OptionalRangeJsonConverter() required String noiseMode,
   }) = _SingboxWarpOption;
 
-  factory SingboxWarpOption.fromJson(Map<String, dynamic> json) => _$SingboxWarpOptionFromJson(json);
+  factory SingboxWarpOption.fromJson(Map<String, dynamic> json) =>
+      _$SingboxWarpOptionFromJson(json);
 }
-
-// @freezed
-// class SingboxMuxOption with _$SingboxMuxOption {
-//   @JsonSerializable(fieldRename: FieldRename.kebab)
-//   const factory SingboxMuxOption({
-//     required bool enable,
-//     required bool padding,
-//     required int maxStreams,
-//     required MuxProtocol protocol,
-//   }) = _SingboxMuxOption;
-
-//   factory SingboxMuxOption.fromJson(Map<String, dynamic> json) => _$SingboxMuxOptionFromJson(json);
-// }
 
 @freezed
 class SingboxTlsTricks with _$SingboxTlsTricks {
@@ -108,5 +101,6 @@ class SingboxTlsTricks with _$SingboxTlsTricks {
     @OptionalRangeJsonConverter() required OptionalRange paddingSize,
   }) = _SingboxTlsTricks;
 
-  factory SingboxTlsTricks.fromJson(Map<String, dynamic> json) => _$SingboxTlsTricksFromJson(json);
+  factory SingboxTlsTricks.fromJson(Map<String, dynamic> json) =>
+      _$SingboxTlsTricksFromJson(json);
 }
